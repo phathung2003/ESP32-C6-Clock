@@ -24,18 +24,11 @@ MD_Parola matrixDHT = MD_Parola(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN_2, MAX_
 #define DHTPIN 23
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
-unsigned long dhtTimer = 0;
-float t = 0, h = 0;
-#define TIMEDHT 5000  // cập nhật 5 giây
 
 // ==================== RTC ====================
 #define SDA_PIN 8
 #define SCL_PIN 9
 RTC_DS1307 rtc;
-char timeStr[9];
-bool showColon = true;
-unsigned long lastUpdate = 0;
-bool showTemp = true;
 
 // ==================== BUTTON ====================
 #define BTN_POWER   10
@@ -43,11 +36,13 @@ bool showTemp = true;
 #define BTN_UP      21
 #define BTN_DOWN    22
 
-const int NUM_BUTTONS = 4;
-const int buttonPins[NUM_BUTTONS] = {BTN_POWER, BTN_SETTING, BTN_UP, BTN_DOWN}; 
-unsigned long lastPressTime[NUM_BUTTONS] = {0, 0, 0, 0};
-bool isPressed[NUM_BUTTONS] = {false, false, false, false};
-const unsigned long debounceDelay = 100;
+// ==================== VARIABLE ====================
+#define WEATHER_INFO_DELAY_SECOND 10000   // Thời gian chờ giữa hiện nhiệt độ và độ ẩm
+bool settingMode = false;                 // True: Đang chỉnh giờ | False: Hiện đồng hồ
+int settingStep = 0;                      // Bước cài đặt
+int setH, setM, setS;                     // Giá trị đang chỉnh
+bool showTemp = true;                     // True: Hiển thị nhiệu độ | False: Hiển thị độ ẩm 
+unsigned long dhtTimer = 0;               // Thời gian chờ chuyển đổi hiện thông tin nhiệt độ và độ ẩm
 
 // ==================== SETUP ====================
 void setup() {
@@ -72,7 +67,7 @@ void setup() {
   pinMode(BTN_UP, INPUT_PULLUP); 
   pinMode(BTN_DOWN, INPUT_PULLUP); 
 
-  // Khởi tạo Matrix
+  // Khởi tạo màn hình
   matrixTime.begin();
   matrixTime.setIntensity(5);
   matrixTime.displayClear();
@@ -82,95 +77,165 @@ void setup() {
   matrixDHT.setIntensity(5);
   matrixDHT.displayClear();
   matrixDHT.setFont(FontSegment);
-
 }
-
 
 // ==================== LOOP ====================
 void loop() {
-
-  checkButtons();
-  // ================= HIỂN THỊ GIỜ =================
-if (millis() - lastUpdate >= 1000) {
-    lastUpdate = millis();
-    DateTime now = rtc.now();
-
-    // Print raw to Serial for debugging (with seconds)
-
-    // Format time (hh:mm:ss) với leading zero và blinking colon ở giữa
-    sprintf(timeStr, "%02d%c%02d%c%02d", 
-            now.hour(), showColon ? ':' : ' ', 
-            now.minute(), showColon ? ':' : ' ', 
-            now.second());
-
-    // Update display
-    matrixTime.displayText(timeStr, PA_CENTER, 0, 0, PA_PRINT, PA_NO_EFFECT);
-    matrixTime.displayReset();
-    // Ký hiệu độ C (°)
-    uint8_t degC[] = { 6, 3, 3, 56, 68, 68, 68 };
-    matrixDHT.addChar('$', degC);
-
-    // Toggle colon blink
-    showColon = !showColon;
-}
-
+  handleSetting();
+  showTime();
   showWeather();
-  // ================= ANIMATE =================
-  matrixTime.displayAnimate();
-  matrixDHT.displayAnimate();
 }
 
+// ==================== SETTING ====================
+void handleSetting() {
+  static bool prevSettingBtn = false;
+  bool settingBtn = digitalRead(BTN_SETTING) == LOW;
 
-
-void checkButtons() {
-  for (int i = 0; i < NUM_BUTTONS; i++) {
-    bool buttonState = digitalRead(buttonPins[i]);
-
-    if (buttonState == LOW && !isPressed[i] && (millis() - lastPressTime[i] > debounceDelay)) {
-      Serial.print("Button ");
-      Serial.print(i);
-      Serial.println(" pressed!");
-      isPressed[i] = true;
-      lastPressTime[i] = millis();
-    }
-
-    // Reset khi thả nút
-    if (buttonState == HIGH) {
-      isPressed[i] = false;
-    }
-  }
-}
-
-void showWeather(){
-  if (millis() - dhtTimer >= TIMEDHT) {
-    dhtTimer = millis();
-    t = dht.readTemperature();
-    h = dht.readHumidity();
-
-    char dhtStr[20];
-    if (!isnan(t) && !isnan(h)) {
-      if (showTemp) {
-        // Hiển thị nhiệt độ (20°C)
-        sprintf(dhtStr, "%.1f$", t, 223); // 223 = ký hiệu °
-      } 
-      else {
-        // Hiển thị độ ẩm (40%) 
-        // chuyển sang font mặc định để % hiển thị được
-        matrixDHT.setFont(nullptr);
-        sprintf(dhtStr, "%.0f%%UR", h);
-      }
-
-      Serial.print("Display DHT -> ");
-      Serial.println(dhtStr);
-
-      matrixDHT.displayClear();
-      matrixDHT.displayText(dhtStr, PA_CENTER, 2000, TIMEDHT, PA_PRINT, PA_SCROLL_UP);
-      matrixDHT.displayAnimate();
+  // Nhấn SET để chuyển bước
+  if (settingBtn && !prevSettingBtn) {
+    settingMode = true;
+    settingStep++;
+    
+    // Bước 3 = lưu và thoát
+    if (settingStep > 3) {
+      DateTime now = rtc.now(); // Lấy ngày hiện tại
+      rtc.adjust(DateTime(now.year(), now.month(), now.day(), setH, setM, setS));
+      settingMode = false;
+      settingStep = 0;
+        Serial.println("Time updated!");
     } 
-    else {
-      sprintf(dhtStr, "Sensor Err");
-      Serial.println("DHT22: Error reading sensor!");
+    // Bắt đầu chỉnh giờ, copy giờ hiện tại
+    else if (settingStep == 1) {
+      DateTime now = rtc.now();
+      setH = now.hour();
+      setM = now.minute();
+      setS = now.second();
     }
-    showTemp = !showTemp;
+    delay(200);
   }
+
+  prevSettingBtn = settingBtn;
+
+  // Nếu không đang chỉnh hoặc bước không hợp lệ, bỏ qua
+  if (!settingMode || settingStep == 0 || settingStep > 3) return;
+
+  // Nút UP tăng giá trị
+  if (digitalRead(BTN_UP) == LOW) {
+    switch (settingStep) {
+      case 1: setH = (setH + 1) % 24; break;
+      case 2: setM = (setM + 1) % 60; break;
+      case 3: setS = (setS + 1) % 60; break;
+    }
+    delay(150);
+  }
+
+  // Nút DOWN giảm giá trị
+  if (digitalRead(BTN_DOWN) == LOW) {
+    switch (settingStep) {
+        case 1: setH = (setH + 23) % 24; break;  // +23 mod 24 = -1
+        case 2: setM = (setM + 59) % 60; break;  // +59 mod 60 = -1
+        case 3: setS = (setS + 59) % 60; break;  // +59 mod 60 = -1
+      }
+    delay(150);
+  }
+}
+
+
+// ==================== SHOW TIME ====================
+void showTime() {
+  static unsigned long lastBlink = 0;
+  static bool blink = false;
+  char timeStr[9];
+  bool showColon = true;
+  
+  // Toggle blink every 500ms
+  if (millis() - lastBlink >= 500) {
+    lastBlink = millis();
+    blink = !blink;
+  }
+
+  int displayH, displayM, displayS;
+
+  if (settingMode && settingStep >= 1 && settingStep <= 3) {
+    displayH = setH;
+    displayM = setM;
+    displayS = setS;
+  } 
+  else {
+    DateTime now = rtc.now();
+    displayH = now.hour();
+    displayM = now.minute();
+    displayS = now.second();
+  }
+
+  char hourStr[3], minStr[3], secStr[3];
+  // Sao chép số đang chỉnh
+  sprintf(hourStr,"%02d",displayH);
+  sprintf(minStr,"%02d",displayM);
+  sprintf(secStr,"%02d",displayS);
+
+  // nếu đang nháy, dùng ký tự ' ' nhưng vẽ bằng intensity 0
+  if(settingMode && blink){
+    switch(settingStep){
+        case 1: // Nháy giờ
+            sprintf(hourStr, "  "); // 2 khoảng trắng
+            break;
+        case 2: // Nháy phút
+            sprintf(minStr, "  ");
+            break;
+        case 3: // Nháy giây
+            sprintf(secStr, "  ");
+            break;
+    }
+  }
+
+  // Ghép thành hh:mm:ss
+  sprintf(timeStr, "%s:%s:%s", hourStr, minStr, secStr);
+
+  // Hiển thị lên matrix
+  matrixTime.displayText(timeStr, PA_CENTER, 0, 0, PA_PRINT, PA_NO_EFFECT);
+  matrixTime.displayReset();
+
+  // Nếu không chỉnh, toggle colon
+  if (!settingMode) showColon = !showColon;
+
+  matrixTime.displayAnimate();
+}
+
+// ==================== SHOW WEATHER ====================
+void showWeather() {
+
+  if (millis() - dhtTimer < WEATHER_INFO_DELAY_SECOND) {
+    return;
+  }
+
+  matrixDHT.setFont(FontSegment);
+  dhtTimer = millis();
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  char dhtStr[20];
+
+  // Không đọc được thông tin
+  if (isnan(temperature) && isnan(humidity)) {
+    sprintf(dhtStr, "Sensor Err");
+  }
+    
+  // Hiển thị nhiệt độ
+  if (showTemp) {
+    sprintf(dhtStr, "%.1f%cC", temperature, 223);
+  } 
+  // Hiển thị độ ẩm (40%) 
+  else {
+    matrixDHT.setFont(nullptr);
+    sprintf(dhtStr, "%.0f%%UR", humidity);
+  }
+    
+  // Đổi thông tin hiển thị
+  showTemp = !showTemp;
+  
+  // Hiển thị thông tin
+  matrixDHT.displayClear();
+  matrixDHT.displayText(dhtStr, PA_CENTER, 5000, WEATHER_INFO_DELAY_SECOND, PA_PRINT, PA_SCROLL_UP);
+  matrixDHT.displayAnimate();
 }
