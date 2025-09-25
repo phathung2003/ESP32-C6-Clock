@@ -1,0 +1,39 @@
+# =========================
+# PlatformIO & Arduino
+# =========================
+
+# Build output
+.pio/
+.pioenvs/
+.platformio/
+
+# Auto-generated library dependencies
+lib/.piolibdeps/
+
+# Wokwi simulator
+.wokwi/
+
+# Compiled files
+*.elf
+*.bin
+*.hex
+*.eep
+*.map
+*.log
+
+# Temporary / backup
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# User-specific VSCode settings
+.vscode/*
+
+# Keep your source code and custom libraries
+!src/
+!lib/**/
