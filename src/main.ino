@@ -27,6 +27,7 @@ DHT dht(DHTPIN, DHTTYPE);
 unsigned long dhtTimer = 0;
 float t = 0, h = 0;
 #define TIMEDHT 5000  // cập nhật 5 giây
+
 // ==================== RTC ====================
 #define SDA_PIN 8
 #define SCL_PIN 9
@@ -36,6 +37,19 @@ bool showColon = true;
 unsigned long lastUpdate = 0;
 bool showTemp = true;
 
+// ==================== BUTTON ====================
+#define BTN_POWER   10
+#define BTN_SETTING 11
+#define BTN_UP      21
+#define BTN_DOWN    22
+
+const int NUM_BUTTONS = 4;
+const int buttonPins[NUM_BUTTONS] = {BTN_POWER, BTN_SETTING, BTN_UP, BTN_DOWN}; 
+unsigned long lastPressTime[NUM_BUTTONS] = {0, 0, 0, 0};
+bool isPressed[NUM_BUTTONS] = {false, false, false, false};
+const unsigned long debounceDelay = 100;
+
+// ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -50,6 +64,14 @@ void setup() {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
+  // DHT22
+  dht.begin();
+
+  // Button
+  pinMode(BTN_SETTING, INPUT_PULLUP); 
+  pinMode(BTN_UP, INPUT_PULLUP); 
+  pinMode(BTN_DOWN, INPUT_PULLUP); 
+
   // Khởi tạo Matrix
   matrixTime.begin();
   matrixTime.setIntensity(5);
@@ -60,19 +82,20 @@ void setup() {
   matrixDHT.setIntensity(5);
   matrixDHT.displayClear();
   matrixDHT.setFont(FontSegment);
-  // DHT22
-  dht.begin();
+
 }
+
+
+// ==================== LOOP ====================
 void loop() {
+
+  checkButtons();
   // ================= HIỂN THỊ GIỜ =================
 if (millis() - lastUpdate >= 1000) {
     lastUpdate = millis();
     DateTime now = rtc.now();
 
     // Print raw to Serial for debugging (with seconds)
-    Serial.printf("RTC raw: %04d-%02d-%02d %02d:%02d:%02d\n",
-                  now.year(), now.month(), now.day(),
-                  now.hour(), now.minute(), now.second());
 
     // Format time (hh:mm:ss) với leading zero và blinking colon ở giữa
     sprintf(timeStr, "%02d%c%02d%c%02d", 
@@ -86,46 +109,68 @@ if (millis() - lastUpdate >= 1000) {
     // Ký hiệu độ C (°)
     uint8_t degC[] = { 6, 3, 3, 56, 68, 68, 68 };
     matrixDHT.addChar('$', degC);
-    Serial.print("Display TIME -> '");
-    Serial.print(timeStr);
-    Serial.println("'");
 
     // Toggle colon blink
     showColon = !showColon;
 }
 
-// ==================== DHT22 ====================
-if (millis() - dhtTimer >= TIMEDHT) {
-  dhtTimer = millis();
-  t = dht.readTemperature();
-  h = dht.readHumidity();
-
-  char dhtStr[20];
-  if (!isnan(t) && !isnan(h)) {
-    if (showTemp) {
-      // Hiển thị nhiệt độ (20°C)
-      sprintf(dhtStr, "%.1f$", t, 223); // 223 = ký hiệu °
-     } else {
-      // Hiển thị độ ẩm (40%) 
-      // chuyển sang font mặc định để % hiển thị được
-      matrixDHT.setFont(nullptr);
-      sprintf(dhtStr, "%.0f%%UR", h);
-    }
-
-    Serial.print("Display DHT -> ");
-    Serial.println(dhtStr);
-
-    matrixDHT.displayClear();
-    matrixDHT.displayText(dhtStr, PA_CENTER, 2000, TIMEDHT, PA_PRINT, PA_SCROLL_UP);
-    matrixDHT.displayAnimate();
-  } else {
-    sprintf(dhtStr, "Sensor Err");
-    Serial.println("DHT22: Error reading sensor!");
-  }
-
-  showTemp = !showTemp;
-}
+  showWeather();
   // ================= ANIMATE =================
   matrixTime.displayAnimate();
   matrixDHT.displayAnimate();
+}
+
+
+
+void checkButtons() {
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    bool buttonState = digitalRead(buttonPins[i]);
+
+    if (buttonState == LOW && !isPressed[i] && (millis() - lastPressTime[i] > debounceDelay)) {
+      Serial.print("Button ");
+      Serial.print(i);
+      Serial.println(" pressed!");
+      isPressed[i] = true;
+      lastPressTime[i] = millis();
+    }
+
+    // Reset khi thả nút
+    if (buttonState == HIGH) {
+      isPressed[i] = false;
+    }
+  }
+}
+
+void showWeather(){
+  if (millis() - dhtTimer >= TIMEDHT) {
+    dhtTimer = millis();
+    t = dht.readTemperature();
+    h = dht.readHumidity();
+
+    char dhtStr[20];
+    if (!isnan(t) && !isnan(h)) {
+      if (showTemp) {
+        // Hiển thị nhiệt độ (20°C)
+        sprintf(dhtStr, "%.1f$", t, 223); // 223 = ký hiệu °
+      } 
+      else {
+        // Hiển thị độ ẩm (40%) 
+        // chuyển sang font mặc định để % hiển thị được
+        matrixDHT.setFont(nullptr);
+        sprintf(dhtStr, "%.0f%%UR", h);
+      }
+
+      Serial.print("Display DHT -> ");
+      Serial.println(dhtStr);
+
+      matrixDHT.displayClear();
+      matrixDHT.displayText(dhtStr, PA_CENTER, 2000, TIMEDHT, PA_PRINT, PA_SCROLL_UP);
+      matrixDHT.displayAnimate();
+    } 
+    else {
+      sprintf(dhtStr, "Sensor Err");
+      Serial.println("DHT22: Error reading sensor!");
+    }
+    showTemp = !showTemp;
+  }
 }
