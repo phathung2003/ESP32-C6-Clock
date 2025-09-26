@@ -5,6 +5,7 @@
 #include "RTClib.h"
 #include <DHT.h>
 #include "FontSegment.h"  
+#include "driver/ledc.h"
 // ==================== MATRIX LED ====================
 #define HARDWARE_TYPE MD_MAX72XX::PAROLA_HW
 #define MAX_DEVICES   5 
@@ -36,13 +37,26 @@ RTC_DS1307 rtc;
 #define BTN_UP      21
 #define BTN_DOWN    22
 
+// ==================== BUTTON ====================
+#define BUZZER 15
+
+// ==================== SYSTEM BEHAVIOR ====================
+bool alarmEnabled = false;                // True: Bật báo thức | False: Tắt báo thức
+bool settingMode = false;                 // True: Đang chỉnh giờ | False: Hiện đồng hồ
+
 // ==================== VARIABLE ====================
 #define WEATHER_INFO_DELAY_SECOND 10000   // Thời gian chờ giữa hiện nhiệt độ và độ ẩm
-bool settingMode = false;                 // True: Đang chỉnh giờ | False: Hiện đồng hồ
 int settingStep = 0;                      // Bước cài đặt
+
 int setH, setM, setS;                     // Giá trị đang chỉnh
+int alarmH = 6, alarmM = 00;              // Giá trị báo thức
+bool alarmRinging = false;                // True: Chuông đang kêu | False: Chuông đang tắt
+
 bool showTemp = true;                     // True: Hiển thị nhiệu độ | False: Hiển thị độ ẩm 
 unsigned long dhtTimer = 0;               // Thời gian chờ chuyển đổi hiện thông tin nhiệt độ và độ ẩm
+
+bool buzzerOn = false;                    // True: Còi đang kêu | False: Còi đang tắt
+unsigned long lastBeep = 0;               // Thời gian còi kêu lần cuối
 
 // ==================== SETUP ====================
 void setup() {
@@ -62,6 +76,10 @@ void setup() {
   // DHT22
   dht.begin();
 
+  // Buzzer
+  pinMode(BUZZER, OUTPUT);
+  ledcAttach(BUZZER, 2000, 8);
+  
   // Button
   pinMode(BTN_SETTING, INPUT_PULLUP); 
   pinMode(BTN_UP, INPUT_PULLUP); 
@@ -82,123 +100,178 @@ void setup() {
 // ==================== LOOP ====================
 void loop() {
   handleSetting();
-  showTime();
+  if (settingMode) showSettingTime();
+  else showTime();
   showWeather();
+  checkAlarm();
+  alarmSound();
 }
 
 // ==================== SETTING ====================
 void handleSetting() {
   static bool prevSettingBtn = false;
-  bool settingBtn = digitalRead(BTN_SETTING) == LOW;
+  static unsigned long pressStartTime = 0;
+  static bool holding = false;
 
-  // Nhấn SET để chuyển bước
-  if (settingBtn && !prevSettingBtn) {
-    settingMode = true;
-    settingStep++;
-    
-    // Bước 3 = lưu và thoát
-    if (settingStep > 3) {
-      DateTime now = rtc.now(); // Lấy ngày hiện tại
-      rtc.adjust(DateTime(now.year(), now.month(), now.day(), setH, setM, setS));
-      settingMode = false;
-      settingStep = 0;
-        Serial.println("Time updated!");
-    } 
-    // Bắt đầu chỉnh giờ, copy giờ hiện tại
-    else if (settingStep == 1) {
+  bool btnState = digitalRead(BTN_SETTING) == LOW;
+
+  // --- Khi bắt đầu nhấn ---
+  if (btnState && !prevSettingBtn) {
+    pressStartTime = millis();
+    holding = true;
+
+    if(alarmRinging){
+      alarmRinging = false;
+      ledcWriteTone(BUZZER, 0);
+      holding = false;
+      prevSettingBtn = btnState;
+      return;
+    }
+  }
+
+  // --- Khi đang nhấn giữ ---
+  if (btnState && holding && !settingMode) {
+    unsigned long pressDuration = millis() - pressStartTime;
+
+    // Giữ >= 5s => vào chế độ chỉnh giờ
+    if (pressDuration >= 5000) {
+      settingMode = true;
+      settingStep = 1;
+
       DateTime now = rtc.now();
       setH = now.hour();
       setM = now.minute();
       setS = now.second();
+
+      holding = false;
     }
-    delay(200);
   }
 
-  prevSettingBtn = settingBtn;
+  // --- Khi nhả nút ---
+  if (!btnState && prevSettingBtn) {
+    unsigned long pressDuration = millis() - pressStartTime;
 
-  // Nếu không đang chỉnh hoặc bước không hợp lệ, bỏ qua
-  if (!settingMode || settingStep == 0 || settingStep > 3) return;
+    // Nếu báo thức đang kêu -> nhấn nhanh để tắt
+    if (alarmRinging && pressDuration < 1000) {
+      alarmRinging = false;
+      digitalWrite(BUZZER, LOW);
+      holding = false;
+      prevSettingBtn = btnState;
+      return;
+    }
 
-  // Nút UP tăng giá trị
+    // Nếu đang ở chế độ chỉnh => nhấn ngắn để chuyển bước
+    if (settingMode && pressDuration < 1000) {
+      settingStep++;
+
+      // Bước 4: bật/tắt báo thức
+      // Nếu báo thức đang tắt → bỏ qua bước chỉnh giờ báo thức
+      if (settingStep == 5 && !alarmEnabled) {
+        settingStep = 7; // nhảy qua bước lưu
+      }
+
+      // Bước 7 = lưu và thoát
+      if (settingStep > 6) {
+        DateTime now = rtc.now();
+        rtc.adjust(DateTime(now.year(), now.month(), now.day(), setH, setM, setS));
+        settingMode = false;
+        settingStep = 0;
+      }
+      delay(200);
+    }
+
+    holding = false;
+  }
+
+  prevSettingBtn = btnState;
+
+  // Nếu không đang chỉnh => Thoát
+  if (!settingMode || settingStep == 0 || settingStep > 6) return;
+
+  // --- UP / DOWN ---
   if (digitalRead(BTN_UP) == LOW) {
     switch (settingStep) {
       case 1: setH = (setH + 1) % 24; break;
       case 2: setM = (setM + 1) % 60; break;
       case 3: setS = (setS + 1) % 60; break;
+      case 4: alarmEnabled = !alarmEnabled; break;
+      case 5: alarmH = (alarmH + 1) % 24; break;
+      case 6: alarmM = (alarmM + 1) % 60; break;
     }
     delay(150);
   }
 
-  // Nút DOWN giảm giá trị
   if (digitalRead(BTN_DOWN) == LOW) {
     switch (settingStep) {
-        case 1: setH = (setH + 23) % 24; break;  // +23 mod 24 = -1
-        case 2: setM = (setM + 59) % 60; break;  // +59 mod 60 = -1
-        case 3: setS = (setS + 59) % 60; break;  // +59 mod 60 = -1
-      }
+      case 1: setH = (setH + 23) % 24; break;
+      case 2: setM = (setM + 59) % 60; break;
+      case 3: setS = (setS + 59) % 60; break;
+      case 4: alarmEnabled = !alarmEnabled; break;
+      case 5: alarmH = (alarmH + 23) % 24; break;
+      case 6: alarmM = (alarmM + 59) % 60; break;
+    }
     delay(150);
   }
 }
 
-
-// ==================== SHOW TIME ====================
-void showTime() {
+// ==================== SHOW SETTING ====================
+void showSettingTime() {
   static unsigned long lastBlink = 0;
   static bool blink = false;
-  char timeStr[9];
-  bool showColon = true;
   
-  // Toggle blink every 500ms
   if (millis() - lastBlink >= 500) {
     lastBlink = millis();
     blink = !blink;
   }
 
-  int displayH, displayM, displayS;
+  char disp[12];
 
-  if (settingMode && settingStep >= 1 && settingStep <= 3) {
-    displayH = setH;
-    displayM = setM;
-    displayS = setS;
-  } 
-  else {
-    DateTime now = rtc.now();
-    displayH = now.hour();
-    displayM = now.minute();
-    displayS = now.second();
-  }
+  // Chỉnh thời gian hệ thống
+  if (settingStep >= 1 && settingStep <= 3) {
+    char h[3], m[3], s[3];
+    sprintf(h, "%02d", setH);
+    sprintf(m, "%02d", setM);
+    sprintf(s, "%02d", setS);
 
-  char hourStr[3], minStr[3], secStr[3];
-  // Sao chép số đang chỉnh
-  sprintf(hourStr,"%02d",displayH);
-  sprintf(minStr,"%02d",displayM);
-  sprintf(secStr,"%02d",displayS);
-
-  // nếu đang nháy, dùng ký tự ' ' nhưng vẽ bằng intensity 0
-  if(settingMode && blink){
-    switch(settingStep){
-        case 1: // Nháy giờ
-            sprintf(hourStr, "  "); // 2 khoảng trắng
-            break;
-        case 2: // Nháy phút
-            sprintf(minStr, "  ");
-            break;
-        case 3: // Nháy giây
-            sprintf(secStr, "  ");
-            break;
+    if (blink) {
+      if (settingStep == 1) sprintf(h, "  ");
+      else if (settingStep == 2) sprintf(m, "  ");
+      else if (settingStep == 3) sprintf(s, "  ");
     }
+
+    sprintf(disp, "%s:%s:%s", h, m, s);
+  }
+  // Bật | Tắt báo thức
+  else if (settingStep == 4) {
+    sprintf(disp, "AL %s", alarmEnabled ? "ON " : "OFF");
+  }
+  // Chỉnh giờ báo thức (Nếu báo thức bật)
+  else if (settingStep == 5 || settingStep == 6) {
+    char h[3], m[3];
+    sprintf(h, "%02d", alarmH);
+    sprintf(m, "%02d", alarmM);
+
+    if (blink) {
+      if (settingStep == 5) sprintf(h, "  ");
+      else sprintf(m, "  ");
+    }
+
+    sprintf(disp, "AL %s:%s", h, m);
   }
 
-  // Ghép thành hh:mm:ss
-  sprintf(timeStr, "%s:%s:%s", hourStr, minStr, secStr);
+  matrixTime.displayText(disp, PA_CENTER, 0, 0, PA_PRINT, PA_NO_EFFECT);
+  matrixTime.displayReset();
+  matrixTime.displayAnimate();
+}
 
-  // Hiển thị lên matrix
+// ==================== SHOW TIME ====================
+void showTime() {
+  DateTime now = rtc.now();
+  char timeStr[9];
+  sprintf(timeStr, "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+
   matrixTime.displayText(timeStr, PA_CENTER, 0, 0, PA_PRINT, PA_NO_EFFECT);
   matrixTime.displayReset();
-
-  // Nếu không chỉnh, toggle colon
-  if (!settingMode) showColon = !showColon;
-
   matrixTime.displayAnimate();
 }
 
@@ -238,4 +311,37 @@ void showWeather() {
   matrixDHT.displayClear();
   matrixDHT.displayText(dhtStr, PA_CENTER, 5000, WEATHER_INFO_DELAY_SECOND, PA_PRINT, PA_SCROLL_UP);
   matrixDHT.displayAnimate();
+}
+
+// ==================== CHECK ALARM ====================
+void checkAlarm() {
+  // Tắt báo thức
+  if (!alarmEnabled || alarmRinging) {
+    return;
+  }
+
+  DateTime now = rtc.now();
+
+  // Tới giờ báo thức
+  if (now.hour() == alarmH && now.minute() == alarmM && now.second() == 0) {
+    alarmRinging = true;
+    buzzerOn = false;
+  }
+}
+
+void alarmSound() {
+  if (!alarmRinging) return;
+
+  unsigned long now = millis();
+  
+  // Tạo tiếng bíp mỗi 500 ms
+  if (now - lastBeep > 500) {
+    lastBeep = now;
+    buzzerOn = !buzzerOn;
+
+    if (buzzerOn)
+      ledcWriteTone(BUZZER, 1000);
+    else
+      ledcWriteTone(BUZZER, 0);
+  }
 }
