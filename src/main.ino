@@ -41,8 +41,7 @@ RTC_DS1307 rtc;
 #define BUZZER 15
 
 // ==================== SYSTEM BEHAVIOR ====================
-bool alarmEnabled = true;
-bool alarmRinging = false;
+bool alarmEnabled = false;                // True: Bật báo thức | False: Tắt báo thức
 bool settingMode = false;                 // True: Đang chỉnh giờ | False: Hiện đồng hồ
 
 // ==================== VARIABLE ====================
@@ -50,14 +49,14 @@ bool settingMode = false;                 // True: Đang chỉnh giờ | False: 
 int settingStep = 0;                      // Bước cài đặt
 
 int setH, setM, setS;                     // Giá trị đang chỉnh
-int alarmH = 13, alarmM = 43;               // Giá trị báo thức
+int alarmH = 6, alarmM = 00;              // Giá trị báo thức
+bool alarmRinging = false;                // True: Chuông đang kêu | False: Chuông đang tắt
 
 bool showTemp = true;                     // True: Hiển thị nhiệu độ | False: Hiển thị độ ẩm 
 unsigned long dhtTimer = 0;               // Thời gian chờ chuyển đổi hiện thông tin nhiệt độ và độ ẩm
 
-unsigned long pressStartTime = 0;
-bool settingBtnPressed = false;
-bool longPressDetected = false;
+bool buzzerOn = false;                    // True: Còi đang kêu | False: Còi đang tắt
+unsigned long lastBeep = 0;               // Thời gian còi kêu lần cuối
 
 // ==================== SETUP ====================
 void setup() {
@@ -105,7 +104,7 @@ void loop() {
   else showTime();
   showWeather();
   checkAlarm();
-  handleAlarm();
+  alarmSound();
 }
 
 // ==================== SETTING ====================
@@ -144,7 +143,6 @@ void handleSetting() {
       setM = now.minute();
       setS = now.second();
 
-      Serial.println("=== Entering setting mode ===");
       holding = false;
     }
   }
@@ -157,7 +155,6 @@ void handleSetting() {
     if (alarmRinging && pressDuration < 1000) {
       alarmRinging = false;
       digitalWrite(BUZZER, LOW);
-      Serial.println("Alarm stopped!");
       holding = false;
       prevSettingBtn = btnState;
       return;
@@ -168,11 +165,8 @@ void handleSetting() {
       settingStep++;
 
       // Bước 4: bật/tắt báo thức
-      if (settingStep == 4) {
-        Serial.println("Adjust alarm ON/OFF");
-      }
       // Nếu báo thức đang tắt → bỏ qua bước chỉnh giờ báo thức
-      else if (settingStep == 5 && !alarmEnabled) {
+      if (settingStep == 5 && !alarmEnabled) {
         settingStep = 7; // nhảy qua bước lưu
       }
 
@@ -182,7 +176,6 @@ void handleSetting() {
         rtc.adjust(DateTime(now.year(), now.month(), now.day(), setH, setM, setS));
         settingMode = false;
         settingStep = 0;
-        Serial.println("Settings saved!");
       }
       delay(200);
     }
@@ -192,7 +185,7 @@ void handleSetting() {
 
   prevSettingBtn = btnState;
 
-  // Nếu không đang chỉnh => thoát
+  // Nếu không đang chỉnh => Thoát
   if (!settingMode || settingStep == 0 || settingStep > 6) return;
 
   // --- UP / DOWN ---
@@ -233,8 +226,8 @@ void showSettingTime() {
 
   char disp[12];
 
+  // Chỉnh thời gian hệ thống
   if (settingStep >= 1 && settingStep <= 3) {
-    // Chỉnh thời gian hệ thống
     char h[3], m[3], s[3];
     sprintf(h, "%02d", setH);
     sprintf(m, "%02d", setM);
@@ -248,12 +241,12 @@ void showSettingTime() {
 
     sprintf(disp, "%s:%s:%s", h, m, s);
   }
+  // Bật | Tắt báo thức
   else if (settingStep == 4) {
-    // Bật/Tắt báo thức
     sprintf(disp, "AL %s", alarmEnabled ? "ON " : "OFF");
   }
+  // Chỉnh giờ báo thức (Nếu báo thức bật)
   else if (settingStep == 5 || settingStep == 6) {
-    // Chỉnh giờ báo thức
     char h[3], m[3];
     sprintf(h, "%02d", alarmH);
     sprintf(m, "%02d", alarmM);
@@ -281,7 +274,6 @@ void showTime() {
   matrixTime.displayReset();
   matrixTime.displayAnimate();
 }
-
 
 // ==================== SHOW WEATHER ====================
 void showWeather() {
@@ -322,36 +314,34 @@ void showWeather() {
 }
 
 // ==================== CHECK ALARM ====================
-bool buzzerOn = false;
-unsigned long lastBeep = 0;
-unsigned long alarmStart = 0;
-
 void checkAlarm() {
-  if (!alarmEnabled || alarmRinging) return;
+  // Tắt báo thức
+  if (!alarmEnabled || alarmRinging) {
+    return;
+  }
 
   DateTime now = rtc.now();
 
-  // Khi tới giờ báo thức
+  // Tới giờ báo thức
   if (now.hour() == alarmH && now.minute() == alarmM && now.second() == 0) {
     alarmRinging = true;
-    alarmStart = millis();
     buzzerOn = false;
   }
 }
 
-void handleAlarm() {
+void alarmSound() {
   if (!alarmRinging) return;
 
   unsigned long now = millis();
   
-  // Tạo nhịp bíp bíp: kêu 400 ms – tắt 400 ms
-  if (now - lastBeep > 400) {
+  // Tạo tiếng bíp mỗi 500 ms
+  if (now - lastBeep > 500) {
     lastBeep = now;
     buzzerOn = !buzzerOn;
 
     if (buzzerOn)
-      ledcWriteTone(BUZZER, 1000); // phát âm 1 kHz
+      ledcWriteTone(BUZZER, 1000);
     else
-      ledcWriteTone(BUZZER, 0);    // tắt
+      ledcWriteTone(BUZZER, 0);
   }
 }
