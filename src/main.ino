@@ -40,7 +40,11 @@ RTC_DS1307 rtc;
 // ==================== BUTTON ====================
 #define BUZZER 15
 
+// ==================== LED RGB ====================
+#define POWER_LED_RED   12
+
 // ==================== SYSTEM BEHAVIOR ====================
+bool powerOn = true;                      // True: Hệ thống đang bật | False: Hệ thống đang tắt 
 bool alarmEnabled = false;                // True: Bật báo thức | False: Tắt báo thức
 bool settingMode = false;                 // True: Đang chỉnh giờ | False: Hiện đồng hồ
 
@@ -81,9 +85,13 @@ void setup() {
   ledcAttach(BUZZER, 2000, 8);
   
   // Button
+  pinMode(BTN_POWER, INPUT_PULLUP); 
   pinMode(BTN_SETTING, INPUT_PULLUP); 
   pinMode(BTN_UP, INPUT_PULLUP); 
   pinMode(BTN_DOWN, INPUT_PULLUP); 
+
+  // LED RGB
+  pinMode(POWER_LED_RED, OUTPUT);
 
   // Khởi tạo màn hình
   matrixTime.begin();
@@ -99,9 +107,24 @@ void setup() {
 
 // ==================== LOOP ====================
 void loop() {
+  handlePowerButton();
+
+  if (!powerOn){
+    digitalWrite(POWER_LED_RED, LOW);
+    return;
+  }
+  else{
+    digitalWrite(POWER_LED_RED, HIGH);
+  }
+
   handleSetting();
-  if (settingMode) showSettingTime();
-  else showTime();
+  if (settingMode) {
+     showSettingTime();
+  }
+  else{
+     showTime();
+  }
+
   showWeather();
   checkAlarm();
   alarmSound();
@@ -212,6 +235,50 @@ void handleSetting() {
     }
     delay(150);
   }
+}
+
+
+// ==================== POWER ====================
+void handlePowerButton() {
+  static bool prevPowerBtn = false;
+  static unsigned long pressStart = 0;
+  static bool holding = false;
+
+  bool btnState = digitalRead(BTN_POWER) == LOW;
+
+  // Khi mới bắt đầu nhấn
+  if (btnState && !prevPowerBtn) {
+    pressStart = millis();
+    holding = true;
+  }
+
+  // Khi đang giữ nút
+  if (btnState && holding) {
+    unsigned long duration = millis() - pressStart;
+
+    // Đổi trang thái nguồn
+    if (duration >= 3000) {
+      powerOn = !powerOn;
+      holding = false;
+      delay(200);
+
+      if (!powerOn) {
+        // Khi tắt nguồn
+        alarmRinging = false;
+        ledcWriteTone(BUZZER, 0);
+        matrixTime.displayClear();
+        matrixDHT.displayClear();
+
+      }
+    }
+  }
+
+  // Khi nhả nút ra
+  if (!btnState && prevPowerBtn) {
+    holding = false;
+  }
+
+  prevPowerBtn = btnState;
 }
 
 // ==================== SHOW SETTING ====================
