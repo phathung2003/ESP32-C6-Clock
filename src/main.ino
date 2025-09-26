@@ -6,6 +6,8 @@
 #include <DHT.h>
 #include "FontSegment.h"  
 #include "driver/ledc.h"
+#include <WiFi.h>
+#include <WiFiClient.h>
 // ==================== MATRIX LED ====================
 #define HARDWARE_TYPE MD_MAX72XX::PAROLA_HW
 #define MAX_DEVICES   5 
@@ -42,7 +44,8 @@ RTC_DS1307 rtc;
 
 // ==================== LED RGB ====================
 #define POWER_LED_RED   12
-
+#define WIFI_LED_RED    18
+#define WIFI_LED_GREEN  13
 // ==================== SYSTEM BEHAVIOR ====================
 bool powerOn = true;                      // True: Hệ thống đang bật | False: Hệ thống đang tắt 
 bool alarmEnabled = false;                // True: Bật báo thức | False: Tắt báo thức
@@ -92,6 +95,8 @@ void setup() {
 
   // LED RGB
   pinMode(POWER_LED_RED, OUTPUT);
+  pinMode(WIFI_LED_RED, OUTPUT);
+  pinMode(WIFI_LED_GREEN, OUTPUT);
 
   // Khởi tạo màn hình
   matrixTime.begin();
@@ -111,12 +116,14 @@ void loop() {
 
   if (!powerOn){
     digitalWrite(POWER_LED_RED, LOW);
+    digitalWrite(WIFI_LED_RED, LOW);
+    digitalWrite(WIFI_LED_GREEN, LOW);
     return;
   }
-  else{
-    digitalWrite(POWER_LED_RED, HIGH);
-  }
 
+  digitalWrite(POWER_LED_RED, HIGH);
+  checkWifi();
+  
   handleSetting();
   if (settingMode) {
      showSettingTime();
@@ -128,6 +135,7 @@ void loop() {
   showWeather();
   checkAlarm();
   alarmSound();
+  
 }
 
 // ==================== SETTING ====================
@@ -378,6 +386,24 @@ void showWeather() {
   matrixDHT.displayClear();
   matrixDHT.displayText(dhtStr, PA_CENTER, 5000, WEATHER_INFO_DELAY_SECOND, PA_PRINT, PA_SCROLL_UP);
   matrixDHT.displayAnimate();
+}
+
+// ==================== CHECK WIFI ====================
+void checkWifi(){
+ if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;
+    if (client.connect("www.google.com", 80)) {
+      client.stop();
+      digitalWrite(WIFI_LED_GREEN, HIGH);
+      digitalWrite(WIFI_LED_RED, LOW);
+    } else {
+      digitalWrite(WIFI_LED_RED, HIGH);
+      digitalWrite(WIFI_LED_GREEN, LOW);
+    }
+  } else {
+    digitalWrite(WIFI_LED_RED, HIGH);
+    digitalWrite(WIFI_LED_GREEN, LOW);
+  }
 }
 
 // ==================== CHECK ALARM ====================
