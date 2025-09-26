@@ -33,6 +33,9 @@ DHT dht(DHTPIN, DHTTYPE);
 #define SCL_PIN 9
 RTC_DS1307 rtc;
 
+// ==================== PHOTORESISTOR (Cảm biến ánh sáng) ====================
+#define PHOTORESISTOR_AO 3
+
 // ==================== BUTTON ====================
 #define BTN_POWER   10
 #define BTN_SETTING 11
@@ -123,7 +126,8 @@ void loop() {
 
   digitalWrite(POWER_LED_RED, HIGH);
   checkWifi();
-  
+  changeBrightness();
+
   handleSetting();
   if (settingMode) {
      showSettingTime();
@@ -131,11 +135,9 @@ void loop() {
   else{
      showTime();
   }
-
   showWeather();
   checkAlarm();
   alarmSound();
-  
 }
 
 // ==================== SETTING ====================
@@ -287,6 +289,24 @@ void handlePowerButton() {
   }
 
   prevPowerBtn = btnState;
+}
+
+// ==================== POWER ====================
+void changeBrightness() {
+  int ldrValue = analogRead(PHOTORESISTOR_AO);        // Đọc cảm biến ánh sáng (0 [Sáng] - 4095 [Tối])
+  int brightness = map(ldrValue, 0, 4095, 15, 0);     // Trời càng tối → Độ sáng càng nhỏ 
+  brightness = constrain(brightness, 0, 15);          // Giữ trong khoảng hợp lệ
+  
+  // Chỉnh độ sáng màn hình
+  matrixTime.setIntensity(brightness);
+  matrixDHT.setIntensity(brightness);
+  
+  // Giá trị sensor
+  // Serial.print("LDR: ");
+  // Serial.print(ldrValue);
+  // Serial.print(" | Brightness: ");
+  // Serial.println(brightness);
+  // delay(1000);
 }
 
 // ==================== SHOW SETTING ====================
