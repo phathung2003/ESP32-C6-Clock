@@ -351,7 +351,7 @@ void showSettingTime() {
       else sprintf(m, "  ");
     }
 
-    sprintf(disp, "AL %s:%s", h, m);
+    sprintf(disp, "AL%s:%s", h, m);
   }
 
   matrixTime.displayText(disp, PA_CENTER, 0, 0, PA_PRINT, PA_NO_EFFECT);
