@@ -8,6 +8,17 @@
 #include "driver/ledc.h"
 #include <WiFi.h>
 #include <WiFiClient.h>
+
+// Thông tin cấu hình Blynk 
+#if __has_include("env.h")
+  #define BLYNK_SETUP true
+  #include "env.h"
+#else
+  #define BLYNK_SETUP false
+  #define BLYNK_TEMPLATE_ID   ""
+  #define BLYNK_TEMPLATE_NAME   ""
+#endif
+
 // ==================== MATRIX LED ====================
 #define HARDWARE_TYPE MD_MAX72XX::PAROLA_HW
 #define MAX_DEVICES   5 
@@ -49,17 +60,25 @@ RTC_DS1307 rtc;
 #define POWER_LED_RED   12
 #define WIFI_LED_RED    18
 #define WIFI_LED_GREEN  13
+
+// ==================== BLYNK SETTING ====================
+#define SEND_TIMEOUT_MILISECOND  1000
+bool blynkSetup = BLYNK_SETUP;
+#include <BlynkSimpleEsp32.h>
+BlynkTimer timer;
+
 // ==================== SYSTEM BEHAVIOR ====================
-bool powerOn = true;                      // True: Hệ thống đang bật | False: Hệ thống đang tắt 
+bool powerOn = false;                      // True: Hệ thống đang bật | False: Hệ thống đang tắt 
 bool alarmEnabled = false;                // True: Bật báo thức | False: Tắt báo thức
 bool settingMode = false;                 // True: Đang chỉnh giờ | False: Hiện đồng hồ
+bool wifiStatus = false;
 
 // ==================== VARIABLE ====================
 #define WEATHER_INFO_DELAY_SECOND 10000   // Thời gian chờ giữa hiện nhiệt độ và độ ẩm
 int settingStep = 0;                      // Bước cài đặt
 
 int setH, setM, setS;                     // Giá trị đang chỉnh
-int alarmH = 6, alarmM = 00;              // Giá trị báo thức
+int alarmH = 20, alarmM = 23;               // Giá trị báo thức
 bool alarmRinging = false;                // True: Chuông đang kêu | False: Chuông đang tắt
 
 bool showTemp = true;                     // True: Hiển thị nhiệu độ | False: Hiển thị độ ẩm 
@@ -68,18 +87,25 @@ unsigned long dhtTimer = 0;               // Thời gian chờ chuyển đổi h
 bool buzzerOn = false;                    // True: Còi đang kêu | False: Còi đang tắt
 unsigned long lastBeep = 0;               // Thời gian còi kêu lần cuối
 
+float temperature = 0, humidity = 0;
+
+bool prevAlarmEnabled = false; 
+bool prevPowerOn = false; // lưu trạng thái trước
+float prevTemperature = 0, prevHuminity = 0;
+int prevAlarmH = 6, preAlarmM = 0;
+bool firstUpdate = true;
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // RTC
+  // RTCplatformio run
   if (!rtc.begin()) {
     Serial.println("Không tìm thấy DS1307!");
     while (1);
   }
   if (!rtc.isrunning()) {
-    Serial.println("DS1307 chưa chạy, set thời gian mới...");
+    Serial.println("DS1307 chưa chạy, đặt thời gian mới...");
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
@@ -101,6 +127,17 @@ void setup() {
   pinMode(WIFI_LED_RED, OUTPUT);
   pinMode(WIFI_LED_GREEN, OUTPUT);
 
+  // Blynk
+  // WiFi.begin("Wokwi-GUEST", "");
+  if(blynkSetup && BLYNK_AUTH_TOKEN != nullptr && strlen(BLYNK_AUTH_TOKEN) > 0){
+    Blynk.begin(BLYNK_AUTH_TOKEN,"Wokwi-GUEST", "");
+  }
+  else{
+    blynkSetup = false;
+  }
+
+  // timer.setInterval((long)(SEND_TIMEOUT_MILISECOND), sendBlynkData);
+
   // Khởi tạo màn hình
   matrixTime.begin();
   matrixTime.setIntensity(5);
@@ -116,28 +153,39 @@ void setup() {
 // ==================== LOOP ====================
 void loop() {
   handlePowerButton();
-
+  checkWifi();
+  if(wifiStatus && blynkSetup){
+    Blynk.run();  
+    timer.run();
+    sendBlynkData();
+  }
   if (!powerOn){
     digitalWrite(POWER_LED_RED, LOW);
     digitalWrite(WIFI_LED_RED, LOW);
     digitalWrite(WIFI_LED_GREEN, LOW);
-    return;
-  }
-
-  digitalWrite(POWER_LED_RED, HIGH);
-  checkWifi();
-  changeBrightness();
-
-  handleSetting();
-  if (settingMode) {
-     showSettingTime();
+    alarmRinging = false;
+    ledcWriteTone(BUZZER, 0);
+    matrixTime.displayClear();
+    matrixDHT.displayClear();
   }
   else{
-     showTime();
+
+    digitalWrite(POWER_LED_RED, HIGH);
+
+    changeBrightness();
+    showWeather();
+
+    handleSetting();
+    if (settingMode) {
+      showSettingTime();
+    }
+    else{
+      showTime();
+    }
+  
+    checkAlarm();
+    alarmSound();
   }
-  showWeather();
-  checkAlarm();
-  alarmSound();
 }
 
 // ==================== SETTING ====================
@@ -148,7 +196,7 @@ void handleSetting() {
 
   bool btnState = digitalRead(BTN_SETTING) == LOW;
 
-  // --- Khi bắt đầu nhấn ---
+  // --- Khi bắt đầu nhấn --- 
   if (btnState && !prevSettingBtn) {
     pressStartTime = millis();
     holding = true;
@@ -170,7 +218,7 @@ void handleSetting() {
     if (pressDuration >= 5000) {
       settingMode = true;
       settingStep = 1;
-
+      
       DateTime now = rtc.now();
       setH = now.hour();
       setM = now.minute();
@@ -197,22 +245,35 @@ void handleSetting() {
     if (settingMode && pressDuration < 1000) {
       settingStep++;
 
+      if(settingStep == 4){
+        DateTime now = rtc.now();
+        rtc.adjust(DateTime(now.year(), now.month(), now.day(), setH, setM, setS));
+      }
+
       // Bước 4: bật/tắt báo thức
-      // Nếu báo thức đang tắt → bỏ qua bước chỉnh giờ báo thức
       if (settingStep == 5 && !alarmEnabled) {
         settingStep = 7; // nhảy qua bước lưu
       }
 
       // Bước 7 = lưu và thoát
       if (settingStep > 6) {
-        DateTime now = rtc.now();
-        rtc.adjust(DateTime(now.year(), now.month(), now.day(), setH, setM, setS));
+        if(prevAlarmEnabled != alarmEnabled){
+          Blynk.virtualWrite(V4, alarmEnabled ? 1 : 0);
+          prevAlarmEnabled = alarmEnabled;
+        }
+        if(prevAlarmH != alarmH){
+          Blynk.virtualWrite(V3, alarmH);
+          prevAlarmH = alarmH;
+        }
+
+        if(preAlarmM != alarmM){
+          Blynk.virtualWrite(V4, alarmM);
+          preAlarmM = alarmM;
+        }
         settingMode = false;
         settingStep = 0;
       }
-      delay(200);
     }
-
     holding = false;
   }
 
@@ -260,6 +321,14 @@ void handlePowerButton() {
   if (btnState && !prevPowerBtn) {
     pressStart = millis();
     holding = true;
+
+    if(alarmRinging){
+      alarmRinging = false;
+      ledcWriteTone(BUZZER, 0);
+      holding = false;
+      prevPowerBtn = btnState;
+      return;
+    }
   }
 
   // Khi đang giữ nút
@@ -278,7 +347,6 @@ void handlePowerButton() {
         ledcWriteTone(BUZZER, 0);
         matrixTime.displayClear();
         matrixDHT.displayClear();
-
       }
     }
   }
@@ -289,6 +357,12 @@ void handlePowerButton() {
   }
 
   prevPowerBtn = btnState;
+
+  if(prevPowerOn != powerOn){
+    Blynk.virtualWrite(V0, powerOn ? 1 : 0);
+    Blynk.virtualWrite(V1, powerOn ? 1 : 0);
+    prevPowerOn = powerOn;
+  }
 }
 
 // ==================== POWER ====================
@@ -379,9 +453,18 @@ void showWeather() {
 
   matrixDHT.setFont(FontSegment);
   dhtTimer = millis();
-  float temperature = dht.readTemperature();
-  float humidity = dht.readHumidity();
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
 
+  if(prevTemperature != temperature){
+      Blynk.virtualWrite(V5, temperature);
+      prevTemperature = temperature;
+  }
+
+  if(prevHuminity != humidity){
+    Blynk.virtualWrite(V6, humidity);
+    prevHuminity = humidity;
+  }
   char dhtStr[20];
 
   // Không đọc được thông tin
@@ -414,16 +497,28 @@ void checkWifi(){
     WiFiClient client;
     if (client.connect("www.google.com", 80)) {
       client.stop();
-      digitalWrite(WIFI_LED_GREEN, HIGH);
-      digitalWrite(WIFI_LED_RED, LOW);
-    } else {
+      if(powerOn){
+        digitalWrite(WIFI_LED_GREEN, HIGH);
+        digitalWrite(WIFI_LED_RED, LOW);
+      }
+      else{
+        digitalWrite(WIFI_LED_GREEN, LOW);
+        digitalWrite(WIFI_LED_RED, LOW);
+      }
+      wifiStatus = true;
+      return;
+    }
+  } 
+  if(powerOn){
       digitalWrite(WIFI_LED_RED, HIGH);
       digitalWrite(WIFI_LED_GREEN, LOW);
-    }
-  } else {
-    digitalWrite(WIFI_LED_RED, HIGH);
-    digitalWrite(WIFI_LED_GREEN, LOW);
   }
+  else{
+    digitalWrite(WIFI_LED_GREEN, LOW);
+    digitalWrite(WIFI_LED_RED, LOW);
+  }
+  wifiStatus = false;
+  return;
 }
 
 // ==================== CHECK ALARM ====================
@@ -435,10 +530,10 @@ void checkAlarm() {
 
   DateTime now = rtc.now();
 
-  // Tới giờ báo thức
+  // Tới giờ báo thức 
   if (now.hour() == alarmH && now.minute() == alarmM && now.second() == 0) {
     alarmRinging = true;
-    buzzerOn = false;
+    buzzerOn = true;
   }
 }
 
@@ -457,4 +552,51 @@ void alarmSound() {
     else
       ledcWriteTone(BUZZER, 0);
   }
+}
+
+// ==================== BLYNK ====================
+void sendBlynkData() {
+  if(!firstUpdate){
+    return;
+  }
+
+  Blynk.virtualWrite(V0, powerOn ? 1 : 0);
+  Blynk.virtualWrite(V1, powerOn ? 1 : 0);
+  Blynk.virtualWrite(V2, alarmEnabled ? 1 : 0);
+
+  Blynk.virtualWrite(V3, alarmH);
+  Blynk.virtualWrite(V4, alarmM);
+  firstUpdate = false;
+  return;
+}
+
+BLYNK_CONNECTED() {
+  Blynk.syncVirtual(V0, V1, V2, V3, V4, V5, V6);
+}
+
+// Switch bật/tắt báo thức
+BLYNK_WRITE(V0) {
+  powerOn = param.asInt();  // 1 = Bật, 0 = Tắt
+  // Gửi trạng thái ra widget khác (ví dụ Label trên V1)
+  Blynk.virtualWrite(V1, powerOn ? 1 : 0);
+  prevPowerOn = powerOn;
+}
+
+// Switch bật/tắt báo thức
+BLYNK_WRITE(V2) {
+  alarmEnabled = param.asInt();
+  prevAlarmEnabled = alarmEnabled;
+  Blynk.virtualWrite(V4, alarmEnabled ? 1 : 0);
+}
+
+// Nhập giờ
+BLYNK_WRITE(V3) {
+  alarmH = param.asInt();
+  prevAlarmH = alarmH;
+}
+
+// Nhập phút
+BLYNK_WRITE(V4) {
+  alarmM = param.asInt();
+  preAlarmM = alarmM;
 }
