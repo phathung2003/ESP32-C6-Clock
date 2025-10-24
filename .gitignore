@@ -37,3 +37,6 @@ Thumbs.db
 # Keep your source code and custom libraries
 !src/
 !lib/**/
+
+# Dependency
+src/env.h
